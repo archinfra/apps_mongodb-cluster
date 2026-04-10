@@ -2665,10 +2665,11 @@ metrics:
   prometheusRule:
     ## @param metrics.prometheusRule.enabled Set this to true to create prometheusRules for Prometheus operator
     ##
-    enabled: false
+    enabled: true
     ## @param metrics.prometheusRule.additionalLabels Additional labels that can be used so prometheusRules will be discovered by Prometheus
     ##
-    additionalLabels: {}
+    additionalLabels:
+      monitoring.archinfra.io/stack: default
     ## @param metrics.prometheusRule.namespace Namespace where prometheusRules resource should be created
     ##
     namespace: ""
@@ -2686,4 +2687,38 @@ metrics:
     ##   annotations:
     ##     summary: High request latency
     ##
-    rules: []
+    rules:
+      - alert: MongoDBExporterDown
+        expr: min(mongodb_up{namespace="{{ .Release.Namespace }}"}) < 1
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: MongoDB exporter unavailable
+          description: MongoDB exporter for release {{ include "mongodb.fullname" . }} has been unavailable for more than 2 minutes.
+      - alert: MongoDBReplicaSetMembersLow
+        expr: count(max by (pod) (mongodb_up{namespace="{{ .Release.Namespace }}"}) > 0) < {{ .Values.replicaCount }}
+        for: 10m
+        labels:
+          severity: warning
+          category: availability
+        annotations:
+          summary: MongoDB replica set has fewer live members than expected
+          description: MongoDB release {{ include "mongodb.fullname" . }} currently exposes fewer healthy members than the configured replica count.
+      - alert: MongoDBConnectionsHigh
+        expr: max(mongodb_ss_connections{namespace="{{ .Release.Namespace }}", conn_type="current"}) > 5000
+        for: 10m
+        labels:
+          severity: warning
+          category: saturation
+        annotations:
+          summary: MongoDB current connections are high
+          description: MongoDB release {{ include "mongodb.fullname" . }} has sustained more than 5000 current connections for 10 minutes.
+  dashboards:
+    enabled: true
+    labels:
+      grafana_dashboard: "1"
+      monitoring.archinfra.io/stack: default
+    annotations:
+      grafana_folder: Middleware/MongoDB

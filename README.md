@@ -625,3 +625,37 @@ kubectl exec -it -n aict mongodb-cluster-0 -- mongosh admin -u root -p 'MongoDB@
 - `workflow_dispatch`：手工触发构建
 
 如果本地环境拉不到镜像，推荐直接依赖 GitHub Actions 进行正式产包。
+## Built-in Monitoring, Alerts, And Dashboards
+
+Default install now enables:
+
+- `metrics.enabled=true`
+- `metrics.serviceMonitor.enabled=true`
+- `metrics.prometheusRule.enabled=true`
+
+Default monitoring resources:
+
+- `ServiceMonitor`
+- `PrometheusRule`
+- Grafana dashboard `ConfigMap`
+
+Grafana auto-import contract:
+
+- dashboard label: `grafana_dashboard=1`
+- platform label: `monitoring.archinfra.io/stack=default`
+- folder annotation: `grafana_folder=Middleware/MongoDB`
+
+Built-in alerts:
+
+- `MongoDBExporterDown`
+- `MongoDBReplicaSetMembersLow`
+- `MongoDBConnectionsHigh`
+
+Built-in dashboard panels:
+
+- Healthy Members
+- Current Connections
+- Resident Memory
+- Ops / Sec
+- Connections
+- Operation Rate

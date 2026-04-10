@@ -1,0 +1,172 @@
+{{- if and .Values.metrics.enabled .Values.metrics.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mongodb.fullname" . }}-dashboard
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" .Values.commonLabels "context" $ ) | nindent 4 }}
+    {{- if .Values.metrics.dashboards.labels }}
+    {{- include "common.tplvalues.render" (dict "value" .Values.metrics.dashboards.labels "context" $) | nindent 4 }}
+    {{- end }}
+  {{- if .Values.metrics.dashboards.annotations }}
+  annotations: {{- include "common.tplvalues.render" (dict "value" .Values.metrics.dashboards.annotations "context" $) | nindent 4 }}
+  {{- end }}
+data:
+  mongodb-overview.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "editable": true,
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 0
+          },
+          "targets": [
+            {
+              "expr": "count(max by (pod) (mongodb_up{namespace=\"{{ .Release.Namespace }}\"}) > 0)",
+              "refId": "A"
+            }
+          ],
+          "title": "Healthy Members",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 0
+          },
+          "targets": [
+            {
+              "expr": "max(mongodb_ss_connections{namespace=\"{{ .Release.Namespace }}\", conn_type=\"current\"})",
+              "refId": "A"
+            }
+          ],
+          "title": "Current Connections",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 12,
+            "y": 0
+          },
+          "targets": [
+            {
+              "expr": "max(mongodb_ss_mem_resident_mb{namespace=\"{{ .Release.Namespace }}\"})",
+              "refId": "A"
+            }
+          ],
+          "title": "Resident Memory",
+          "type": "stat",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "decmbytes"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 18,
+            "y": 0
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(mongodb_mongod_op_counters_total{namespace=\"{{ .Release.Namespace }}\"}[5m]))",
+              "refId": "A"
+            }
+          ],
+          "title": "Ops / Sec",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 5
+          },
+          "targets": [
+            {
+              "expr": "max(mongodb_ss_connections{namespace=\"{{ .Release.Namespace }}\", conn_type=\"current\"})",
+              "legendFormat": "current",
+              "refId": "A"
+            },
+            {
+              "expr": "max(mongodb_ss_connections{namespace=\"{{ .Release.Namespace }}\", conn_type=\"available\"})",
+              "legendFormat": "available",
+              "refId": "B"
+            }
+          ],
+          "title": "Connections",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(mongodb_mongod_op_counters_total{namespace=\"{{ .Release.Namespace }}\"}[5m])) by (type)",
+              "legendFormat": "{{`{{type}}`}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Operation Rate",
+          "type": "timeseries"
+        }
+      ],
+      "schemaVersion": 39,
+      "style": "dark",
+      "tags": [
+        "archinfra",
+        "mongodb"
+      ],
+      "templating": {
+        "list": []
+      },
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "title": "MongoDB Replica Set Overview",
+      "version": 1
+    }
+{{- end }}
