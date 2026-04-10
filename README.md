@@ -65,6 +65,32 @@ MongoDB 高可用副本集离线交付仓库。
 - registry repo: `sealos.hub:5000/kube4`
 - image pull policy: `IfNotPresent`
 - wait timeout: `10m`
+- resource profile: `mid`
+
+## Resource profile
+
+Installer supports:
+
+- `--resource-profile low`
+- `--resource-profile mid`
+- `--resource-profile midd`
+- `--resource-profile high`
+
+Default is `mid`. `midd` is accepted as an alias of `mid`.
+
+Profile intent:
+
+- `low`: demo, smoke test, or lightweight shared environment
+- `mid`: normal shared environment, baseline for `500-1000` concurrency and around `10000` users
+- `high`: higher write pressure, larger working set, or busier shared cluster
+
+Per-profile baseline:
+
+| Profile | MongoDB data pod | Exporter sidecar | volumePermissions init | Arbiter | Hidden replica |
+| --- | --- | --- | --- | --- | --- |
+| `low` | `300m / 768Mi` request, `500m / 1Gi` limit | `50m / 64Mi` request, `100m / 128Mi` limit | `20m / 32Mi` request, `100m / 64Mi` limit | `100m / 256Mi` request, `300m / 512Mi` limit | `300m / 768Mi` request, `500m / 1Gi` limit |
+| `mid` | `500m / 1Gi` request, `1 / 2Gi` limit | `100m / 128Mi` request, `200m / 256Mi` limit | `50m / 64Mi` request, `200m / 128Mi` limit | `200m / 512Mi` request, `500m / 1Gi` limit | `500m / 1Gi` request, `1 / 2Gi` limit |
+| `high` | `1 / 2Gi` request, `2 / 4Gi` limit | `200m / 256Mi` request, `500m / 512Mi` limit | `100m / 128Mi` request, `300m / 256Mi` limit | `500m / 1Gi` request, `1 / 2Gi` limit | `1 / 2Gi` request, `2 / 4Gi` limit |
 
 这套默认值面向的是“标准三节点副本集 + 默认开启监控”的常见场景。
 
@@ -102,23 +128,23 @@ MongoDB 高可用副本集离线交付仓库。
 
 当前 chart 的资源主要来自 Bitnami `common.resources.preset` 预设：
 
-- MongoDB 主容器：`small`
-- exporter：`nano`
-- volumePermissions init 容器：`nano`
+- MongoDB 主容器：显式 `500m / 1Gi` request，`1 / 2Gi` limit
+- exporter：显式 `100m / 128Mi` request，`200m / 256Mi` limit
+- volumePermissions init 容器：显式 `50m / 64Mi` request，`200m / 128Mi` limit
 
 对应的大致资源如下。
 
 ### 单个数据节点
 
-MongoDB 主容器 `small`：
+MongoDB 主容器 `mid`：
 
-- request: `500m CPU / 512Mi memory / 50Mi ephemeral-storage`
-- limit: `750m CPU / 768Mi memory / 2Gi ephemeral-storage`
+- request: `500m CPU / 1Gi memory`
+- limit: `1 CPU / 2Gi memory`
 
-Exporter `nano`：
+Exporter `mid`：
 
-- request: `100m CPU / 128Mi memory / 50Mi ephemeral-storage`
-- limit: `150m CPU / 192Mi memory / 2Gi ephemeral-storage`
+- request: `100m CPU / 128Mi memory`
+- limit: `200m CPU / 256Mi memory`
 
 所以一个默认数据节点的持续资源大致是：
 
@@ -132,16 +158,16 @@ Exporter `nano`：
 | 项目 | 单节点 | 3 节点合计 |
 | --- | --- | --- |
 | CPU request | `600m` | `1800m` |
-| Memory request | `640Mi` | `1920Mi` |
-| CPU limit | `900m` | `2700m` |
-| Memory limit | `960Mi` | `2880Mi` |
+| Memory request | `1152Mi` | `3456Mi` |
+| CPU limit | `1200m` | `3600m` |
+| Memory limit | `2304Mi` | `6912Mi` |
 
 ### volumePermissions 额外启动开销
 
-默认 `volumePermissions=true`，每个数据节点启动时还会额外跑一个 `nano` 级别 init 容器：
+默认 `volumePermissions=true`，每个数据节点启动时还会额外跑一个显式 sizing 的 init 容器：
 
-- request: `100m CPU / 128Mi memory`
-- limit: `150m CPU / 192Mi memory`
+- request: `50m CPU / 64Mi memory`
+- limit: `200m CPU / 128Mi memory`
 
 它不是长期常驻容器，但在首次启动、重建 Pod 或重新挂载卷时会出现。
 
@@ -153,10 +179,10 @@ Exporter `nano`：
 --enable-arbiter
 ```
 
-arbiter 默认也是 `small` 预设，大致额外增加：
+arbiter 在默认 `mid` 档位下大致额外增加：
 
-- request: `500m CPU / 512Mi memory`
-- limit: `750m CPU / 768Mi memory`
+- request: `200m CPU / 512Mi memory`
+- limit: `500m CPU / 1Gi memory`
 
 ### 开启 hidden node 后的额外资源
 
@@ -166,10 +192,10 @@ arbiter 默认也是 `small` 预设，大致额外增加：
 --hidden-replica-count <num>
 ```
 
-启用 hidden node，则每个 hidden 节点默认是 `micro` 预设，大致额外增加：
+启用 hidden node，则每个 hidden 节点在默认 `mid` 档位下大致额外增加：
 
-- request: `250m CPU / 256Mi memory`
-- limit: `375m CPU / 384Mi memory`
+- request: `500m CPU / 1Gi memory`
+- limit: `1 CPU / 2Gi memory`
 
 ### 存储需求
 

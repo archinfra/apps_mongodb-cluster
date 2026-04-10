@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 APP_NAME="mongodb-cluster"
-APP_VERSION="0.1.0"
+APP_VERSION="0.1.1"
 PACKAGE_PROFILE="integrated"
 WORKDIR="/tmp/${APP_NAME}-installer"
 CHART_DIR="${WORKDIR}/charts/mongodb"
@@ -29,6 +29,7 @@ POD_ANTI_AFFINITY="soft"
 VOLUME_PERMISSIONS="true"
 STORAGE_CLASS="nfs"
 STORAGE_SIZE="20Gi"
+RESOURCE_PROFILE="mid"
 IMAGE_PULL_POLICY="IfNotPresent"
 WAIT_TIMEOUT="10m"
 REGISTRY_REPO="sealos.hub:5000/kube4"
@@ -122,6 +123,7 @@ Core options:
   --app-password <pwd>                 Optional application password
   --storage-class <name>               StorageClass, default: ${STORAGE_CLASS}
   --storage-size <size>                PVC size per data replica, default: ${STORAGE_SIZE}
+  --resource-profile <name>            Resource profile: low|mid|midd|high, default: ${RESOURCE_PROFILE}
   --pod-anti-affinity <mode>           soft|hard|none, default: ${POD_ANTI_AFFINITY}
   --enable-volume-permissions          Enable volumePermissions init container, default: ${VOLUME_PERMISSIONS}
   --disable-volume-permissions         Disable volumePermissions init container
@@ -157,6 +159,7 @@ Other:
 
 Examples:
   ${cmd} install -y
+  ${cmd} install --resource-profile high -y
   ${cmd} install --root-password 'MongoDB@Passw0rd' --replica-set-key 'ArchInfraMongoReplicaSetKey2026' -y
   ${cmd} install --app-database appdb --app-username app --app-password 'AppUser@2026' -y
   ${cmd} install --disable-servicemonitor --disable-metrics -y
@@ -264,6 +267,11 @@ parse_args() {
       --storage-size)
         [[ $# -ge 2 ]] || die "Missing value for $1"
         STORAGE_SIZE="$2"
+        shift 2
+        ;;
+      --resource-profile)
+        [[ $# -ge 2 ]] || die "Missing value for $1"
+        RESOURCE_PROFILE="$2"
         shift 2
         ;;
       --pod-anti-affinity)
@@ -404,6 +412,21 @@ normalize_flags() {
     ENABLE_METRICS="true"
   fi
 
+  case "${RESOURCE_PROFILE,,}" in
+    low)
+      RESOURCE_PROFILE="low"
+      ;;
+    mid|midd|middle|medium)
+      RESOURCE_PROFILE="mid"
+      ;;
+    high)
+      RESOURCE_PROFILE="high"
+      ;;
+    *)
+      die "Unsupported resource profile: ${RESOURCE_PROFILE}. Expected low|mid|midd|high"
+      ;;
+  esac
+
   if [[ -n "${APP_DATABASE}" || -n "${APP_USERNAME}" || -n "${APP_PASSWORD}" ]]; then
     [[ -n "${APP_DATABASE}" && -n "${APP_USERNAME}" && -n "${APP_PASSWORD}" ]] || die "--app-database, --app-username and --app-password must be provided together"
   fi
@@ -456,6 +479,7 @@ confirm() {
   echo "Hidden replicas         : ${HIDDEN_REPLICA_COUNT}"
   echo "StorageClass            : ${STORAGE_CLASS}"
   echo "Storage size            : ${STORAGE_SIZE}"
+  echo "Resource profile        : ${RESOURCE_PROFILE}"
   echo "Pod anti-affinity       : ${POD_ANTI_AFFINITY}"
   echo "Volume permissions      : ${VOLUME_PERMISSIONS}"
   echo "Metrics                 : ${ENABLE_METRICS}"
@@ -646,6 +670,91 @@ preview_command() {
   echo
 }
 
+build_resource_profile_args() {
+  RESOURCE_HELM_ARGS=(
+    --set "resourcesPreset=none"
+    --set "arbiter.resourcesPreset=none"
+    --set "hidden.resourcesPreset=none"
+    --set "metrics.resourcesPreset=none"
+    --set "volumePermissions.resourcesPreset=none"
+  )
+
+  case "${RESOURCE_PROFILE}" in
+    low)
+      RESOURCE_HELM_ARGS+=(
+        --set-string "resources.requests.cpu=300m"
+        --set-string "resources.requests.memory=768Mi"
+        --set-string "resources.limits.cpu=500m"
+        --set-string "resources.limits.memory=1Gi"
+        --set-string "arbiter.resources.requests.cpu=100m"
+        --set-string "arbiter.resources.requests.memory=256Mi"
+        --set-string "arbiter.resources.limits.cpu=300m"
+        --set-string "arbiter.resources.limits.memory=512Mi"
+        --set-string "hidden.resources.requests.cpu=300m"
+        --set-string "hidden.resources.requests.memory=768Mi"
+        --set-string "hidden.resources.limits.cpu=500m"
+        --set-string "hidden.resources.limits.memory=1Gi"
+        --set-string "metrics.resources.requests.cpu=50m"
+        --set-string "metrics.resources.requests.memory=64Mi"
+        --set-string "metrics.resources.limits.cpu=100m"
+        --set-string "metrics.resources.limits.memory=128Mi"
+        --set-string "volumePermissions.resources.requests.cpu=20m"
+        --set-string "volumePermissions.resources.requests.memory=32Mi"
+        --set-string "volumePermissions.resources.limits.cpu=100m"
+        --set-string "volumePermissions.resources.limits.memory=64Mi"
+      )
+      ;;
+    mid)
+      RESOURCE_HELM_ARGS+=(
+        --set-string "resources.requests.cpu=500m"
+        --set-string "resources.requests.memory=1Gi"
+        --set-string "resources.limits.cpu=1"
+        --set-string "resources.limits.memory=2Gi"
+        --set-string "arbiter.resources.requests.cpu=200m"
+        --set-string "arbiter.resources.requests.memory=512Mi"
+        --set-string "arbiter.resources.limits.cpu=500m"
+        --set-string "arbiter.resources.limits.memory=1Gi"
+        --set-string "hidden.resources.requests.cpu=500m"
+        --set-string "hidden.resources.requests.memory=1Gi"
+        --set-string "hidden.resources.limits.cpu=1"
+        --set-string "hidden.resources.limits.memory=2Gi"
+        --set-string "metrics.resources.requests.cpu=100m"
+        --set-string "metrics.resources.requests.memory=128Mi"
+        --set-string "metrics.resources.limits.cpu=200m"
+        --set-string "metrics.resources.limits.memory=256Mi"
+        --set-string "volumePermissions.resources.requests.cpu=50m"
+        --set-string "volumePermissions.resources.requests.memory=64Mi"
+        --set-string "volumePermissions.resources.limits.cpu=200m"
+        --set-string "volumePermissions.resources.limits.memory=128Mi"
+      )
+      ;;
+    high)
+      RESOURCE_HELM_ARGS+=(
+        --set-string "resources.requests.cpu=1"
+        --set-string "resources.requests.memory=2Gi"
+        --set-string "resources.limits.cpu=2"
+        --set-string "resources.limits.memory=4Gi"
+        --set-string "arbiter.resources.requests.cpu=500m"
+        --set-string "arbiter.resources.requests.memory=1Gi"
+        --set-string "arbiter.resources.limits.cpu=1"
+        --set-string "arbiter.resources.limits.memory=2Gi"
+        --set-string "hidden.resources.requests.cpu=1"
+        --set-string "hidden.resources.requests.memory=2Gi"
+        --set-string "hidden.resources.limits.cpu=2"
+        --set-string "hidden.resources.limits.memory=4Gi"
+        --set-string "metrics.resources.requests.cpu=200m"
+        --set-string "metrics.resources.requests.memory=256Mi"
+        --set-string "metrics.resources.limits.cpu=500m"
+        --set-string "metrics.resources.limits.memory=512Mi"
+        --set-string "volumePermissions.resources.requests.cpu=100m"
+        --set-string "volumePermissions.resources.requests.memory=128Mi"
+        --set-string "volumePermissions.resources.limits.cpu=300m"
+        --set-string "volumePermissions.resources.limits.memory=256Mi"
+      )
+      ;;
+  esac
+}
+
 ensure_namespace() {
   if ! kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1; then
     log "Creating namespace ${NAMESPACE}"
@@ -680,6 +789,7 @@ install_release() {
   os_shell_image="$(find_image_ref_by_name "os-shell")" || die "Unable to resolve os-shell image"
   nginx_image="$(find_image_ref_by_name "nginx")" || die "Unable to resolve nginx image"
   anti_affinity="$(pod_anti_affinity_value)"
+  build_resource_profile_args
 
   local helm_cmd=(
     helm upgrade --install "${RELEASE_NAME}" "${CHART_DIR}"
@@ -775,6 +885,10 @@ install_release() {
 
   if [[ -n "${SERVICE_MONITOR_SCRAPE_TIMEOUT}" && "${ENABLE_SERVICEMONITOR}" == "true" ]]; then
     helm_cmd+=(--set-string "metrics.serviceMonitor.scrapeTimeout=${SERVICE_MONITOR_SCRAPE_TIMEOUT}")
+  fi
+
+  if [[ ${#RESOURCE_HELM_ARGS[@]} -gt 0 ]]; then
+    helm_cmd+=("${RESOURCE_HELM_ARGS[@]}")
   fi
 
   if [[ ${#HELM_ARGS[@]} -gt 0 ]]; then
