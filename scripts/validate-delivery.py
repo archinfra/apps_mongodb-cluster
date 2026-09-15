@@ -12,6 +12,8 @@ CHART = ROOT / "charts" / "mongodb" / "Chart.yaml"
 DELIVERY = ROOT / "charts" / "mongodb" / "archinfra-values.yaml"
 OVERLAY = ROOT / "scripts" / "install-overlay.sh"
 BUILD = ROOT / "build.sh"
+README = ROOT / "README.md"
+WORKFLOW = ROOT / ".github" / "workflows" / "build-offline-installer.yml"
 
 
 def require(path: Path, *needles: str) -> None:
@@ -63,6 +65,16 @@ def main() -> int:
         "whenDeleted: Retain",
         "backup:\n  enabled: false",
         "monitoring.archinfra.io/stack: default",
+        "MongoDBExporterDown",
+        "MongoDBReplicaSetPrimaryMissing",
+        "MongoDBReplicationLagHigh",
+        "MongoDBReplicationLagCritical",
+        "MongoDBConnectionsHigh",
+        "MongoDBConnectionsCritical",
+        "MongoDBWiredTigerCacheHigh",
+        "MongoDBPVCUsageHigh",
+        "MongoDBPVCUsageCritical",
+        "MongoDBPodRestartHigh",
     )
     require(
         OVERLAY,
@@ -79,6 +91,7 @@ def main() -> int:
         "terminationGracePeriodSeconds=120",
         "externalAccess.enabled=false",
         "backup.enabled=false",
+        "persistentVolumeClaimRetentionPolicy.whenDeleted=Retain",
     )
     require(
         BUILD,
@@ -87,15 +100,53 @@ def main() -> int:
         'MONGODB_RUNTIME_SOURCE_COMMIT="29e5d41625b1a629f06d6f3f75c7c354cfd2b1df"',
         "assemble_installer_template",
         "docker buildx build",
+        "verify_mongodb_runtime",
+        "verify_mongodb_exporter",
+        "/opt/bitnami/mongodb/bin/mongod",
+    )
+    require(
+        README,
+        "MongoDB | `8.0.32`",
+        "Percona `0.51.0`",
+        "lite",
+        "standard",
+        "large",
+        "Secret/mongodb-auth",
+        "--storage-size 100Gi",
+        "MongoDBReplicaSetPrimaryMissing",
+        "MongoDBPVCUsageCritical",
+        "不依赖 jq",
+    )
+    require(
+        WORKFLOW,
+        "python3 scripts/validate-delivery.py",
+        "helm lint charts/mongodb -f charts/mongodb/archinfra-values.yaml",
+        "matrix:",
+        "arch: [amd64, arm64]",
     )
 
     reject(BUILD, "command -v jq", "jq ")
-    reject(OVERLAY, "MongoDB@Passw0rd", "ArchInfraMongoReplicaSetKey2026", 'REGISTRY_USER="admin"', 'REGISTRY_PASS="passw0rd"')
+    reject(
+        OVERLAY,
+        "MongoDB@Passw0rd",
+        "ArchInfraMongoReplicaSetKey2026",
+        'REGISTRY_USER="admin"',
+        'REGISTRY_PASS="passw0rd"',
+    )
+    reject(
+        README,
+        "root password: `MongoDB@Passw0rd`",
+        "ArchInfraMongoReplicaSetKey2026",
+        "--resource-profile low",
+        "--resource-profile mid",
+        "--resource-profile high",
+    )
 
     print(
-        "validated MongoDB 8.0.32 delivery baseline: auth Secret lifecycle, "
-        "lite/standard/large profiles, ClusterIP-only default, probes, PVC retention, "
-        "monitoring discovery, exporter 0.51.0 and jq-free build path"
+        "validated MongoDB 8.0.32 delivery baseline: pinned dual-arch runtime, "
+        "auth Secret lifecycle, lite/standard/large profiles, ClusterIP-only default, "
+        "startup/graceful shutdown, PVC retention/reconcile, monitoring/alerts, "
+        "exporter 0.51.0 and jq-free build path"
     )
     return 0
 
