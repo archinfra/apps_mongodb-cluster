@@ -84,6 +84,106 @@ metrics:
     enabled: true
     additionalLabels:
       monitoring.archinfra.io/stack: default
+    rules:
+      - alert: MongoDBExporterDown
+        expr: 'min(mongodb_up{namespace="{{ .Release.Namespace }}"}) < 1'
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: MongoDB exporter unavailable
+          description: MongoDB exporter for {{ include "mongodb.fullname" . }} has been unavailable for more than 2 minutes.
+      - alert: MongoDBReplicaSetMembersLow
+        expr: 'count(max by (pod) (mongodb_up{namespace="{{ .Release.Namespace }}"}) > 0) < {{ .Values.replicaCount }}'
+        for: 5m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: MongoDB replica set has fewer live members than configured
+          description: MongoDB {{ include "mongodb.fullname" . }} has fewer healthy exporter targets than the configured replica count.
+      - alert: MongoDBReplicaSetPrimaryMissing
+        expr: 'sum(mongodb_mongod_replset_my_state{namespace="{{ .Release.Namespace }}"} == 1) < 1'
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: MongoDB replica set primary is missing
+          description: No MongoDB primary has been observed for more than 2 minutes.
+      - alert: MongoDBReplicationLagHigh
+        expr: 'max(mongodb_mongod_replset_member_replication_lag{namespace="{{ .Release.Namespace }}"}) > 30'
+        for: 10m
+        labels:
+          severity: warning
+          category: replication
+        annotations:
+          summary: MongoDB replication lag is high
+          description: At least one replica-set member has been more than 30 seconds behind the primary for 10 minutes.
+      - alert: MongoDBReplicationLagCritical
+        expr: 'max(mongodb_mongod_replset_member_replication_lag{namespace="{{ .Release.Namespace }}"}) > 120'
+        for: 5m
+        labels:
+          severity: critical
+          category: replication
+        annotations:
+          summary: MongoDB replication lag is critical
+          description: At least one replica-set member has been more than 120 seconds behind the primary for 5 minutes.
+      - alert: MongoDBConnectionsHigh
+        expr: 'max(mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} / clamp_min(mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} + mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="available"}, 1)) > 0.80'
+        for: 10m
+        labels:
+          severity: warning
+          category: saturation
+        annotations:
+          summary: MongoDB connection utilization is high
+          description: MongoDB connection utilization has remained above 80% for 10 minutes.
+      - alert: MongoDBConnectionsCritical
+        expr: 'max(mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} / clamp_min(mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} + mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="available"}, 1)) > 0.95'
+        for: 5m
+        labels:
+          severity: critical
+          category: saturation
+        annotations:
+          summary: MongoDB connection utilization is critical
+          description: MongoDB connection utilization has remained above 95% for 5 minutes.
+      - alert: MongoDBWiredTigerCacheHigh
+        expr: 'max(mongodb_mongod_wiredtiger_cache_bytes{namespace="{{ .Release.Namespace }}",type="total"} / clamp_min(mongodb_mongod_wiredtiger_cache_max_bytes{namespace="{{ .Release.Namespace }}"}, 1)) > 0.85'
+        for: 15m
+        labels:
+          severity: warning
+          category: memory
+        annotations:
+          summary: MongoDB WiredTiger cache utilization is high
+          description: WiredTiger cache utilization has remained above 85% for 15 minutes.
+      - alert: MongoDBPVCUsageHigh
+        expr: 'max(kubelet_volume_stats_used_bytes{namespace="{{ .Release.Namespace }}",persistentvolumeclaim=~"datadir-{{ include "mongodb.fullname" . }}-.*"} / clamp_min(kubelet_volume_stats_capacity_bytes{namespace="{{ .Release.Namespace }}",persistentvolumeclaim=~"datadir-{{ include "mongodb.fullname" . }}-.*"}, 1)) > 0.80'
+        for: 15m
+        labels:
+          severity: warning
+          category: storage
+        annotations:
+          summary: MongoDB PVC usage is high
+          description: At least one MongoDB data PVC has remained above 80% utilization for 15 minutes.
+      - alert: MongoDBPVCUsageCritical
+        expr: 'max(kubelet_volume_stats_used_bytes{namespace="{{ .Release.Namespace }}",persistentvolumeclaim=~"datadir-{{ include "mongodb.fullname" . }}-.*"} / clamp_min(kubelet_volume_stats_capacity_bytes{namespace="{{ .Release.Namespace }}",persistentvolumeclaim=~"datadir-{{ include "mongodb.fullname" . }}-.*"}, 1)) > 0.90'
+        for: 10m
+        labels:
+          severity: critical
+          category: storage
+        annotations:
+          summary: MongoDB PVC usage is critical
+          description: At least one MongoDB data PVC has remained above 90% utilization for 10 minutes.
+      - alert: MongoDBPodRestartHigh
+        expr: 'sum(increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}",container="mongodb"}[15m])) > 3'
+        for: 5m
+        labels:
+          severity: warning
+          category: stability
+        annotations:
+          summary: MongoDB pods are restarting repeatedly
+          description: MongoDB containers restarted more than 3 times during the last 15 minutes.
   dashboards:
     enabled: true
     labels:
