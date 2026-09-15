@@ -143,13 +143,28 @@ prepare_mongodb_runtime_context() {
   git -C "${source_dir}" remote add origin "${MONGODB_RUNTIME_SOURCE}"
   git -C "${source_dir}" fetch -q --depth 1 origin "${MONGODB_RUNTIME_SOURCE_COMMIT}"
   git -C "${source_dir}" checkout -q FETCH_HEAD
+  [[ "$(git -C "${source_dir}" rev-parse HEAD)" == "${MONGODB_RUNTIME_SOURCE_COMMIT}" ]] || \
+    die "MongoDB runtime source commit verification failed"
   cp -R "${source_dir}/${MONGODB_RUNTIME_SOURCE_DIR}" "${context_dir}"
 
-  # The pinned source supplies the Bitnami-compatible lifecycle scripts. MongoDB
-  # packages themselves come from MongoDB's official 8.0 apt repository.
+  # Pinned upstream supplies the Bitnami-compatible lifecycle scripts. MongoDB
+  # packages themselves are installed from MongoDB's official 8.0 apt repository.
   sed -i "s/8\\.0\\.9/${MONGODB_VERSION}/g" "${context_dir}/Dockerfile"
   grep -q "ENV MONGO_VERSION ${MONGODB_VERSION}" "${context_dir}/Dockerfile" || \
     die "failed to pin MongoDB runtime to ${MONGODB_VERSION}"
+}
+
+verify_mongodb_runtime() {
+  local platform="$1" load_ref="$2" output
+  output="$(docker run --rm --platform "${platform}" \
+    --entrypoint /opt/bitnami/mongodb/bin/mongod "${load_ref}" --version 2>&1)" || {
+      printf '%s\n' "${output}" >&2
+      die "MongoDB runtime version check failed for ${platform}"
+    }
+  printf '%s\n' "${output}"
+  grep -Eq "db version v?${MONGODB_VERSION}([[:space:]]|$)" <<<"${output}" || \
+    die "built MongoDB runtime does not report ${MONGODB_VERSION} for ${platform}"
+  success "Verified MongoDB ${MONGODB_VERSION} runtime for ${platform}"
 }
 
 build_mongodb_runtime() {
@@ -158,6 +173,20 @@ build_mongodb_runtime() {
   log "Building MongoDB ${MONGODB_VERSION} runtime for ${platform}"
   docker buildx build --platform "${platform}" --load \
     -t "${load_ref}" "${TEMP_DIR}/mongodb-runtime-context"
+  verify_mongodb_runtime "${platform}" "${load_ref}"
+}
+
+verify_mongodb_exporter() {
+  local platform="$1" load_ref="$2" output
+  output="$(docker run --rm --platform "${platform}" \
+    --entrypoint /bin/mongodb_exporter "${load_ref}" --version 2>&1)" || {
+      printf '%s\n' "${output}" >&2
+      die "MongoDB exporter version check failed for ${platform}"
+    }
+  printf '%s\n' "${output}"
+  grep -q "${MONGODB_EXPORTER_VERSION}" <<<"${output}" || \
+    die "built MongoDB exporter does not report ${MONGODB_EXPORTER_VERSION} for ${platform}"
+  success "Verified MongoDB exporter ${MONGODB_EXPORTER_VERSION} for ${platform}"
 }
 
 build_mongodb_exporter() {
@@ -166,6 +195,7 @@ build_mongodb_exporter() {
   docker buildx build --platform "${platform}" --load \
     --build-arg "EXPORTER_IMAGE=percona/mongodb_exporter:${MONGODB_EXPORTER_VERSION}" \
     -t "${load_ref}" "${IMAGES_DIR}/mongodb-exporter"
+  verify_mongodb_exporter "${platform}" "${load_ref}"
 }
 
 prepare_images() {
@@ -176,8 +206,9 @@ prepare_images() {
 
   "$(python_cmd)" - "${IMAGE_JSON}" "${arch}" > "${PAYLOAD_DIR}/images/image.json" <<'PY'
 import json, sys
-with open(sys.argv[1], encoding="utf-8") as fh: items=json.load(fh)
-json.dump([x for x in items if x.get("arch")==sys.argv[2]], sys.stdout, indent=2)
+with open(sys.argv[1], encoding="utf-8") as fh:
+    items = json.load(fh)
+json.dump([x for x in items if x.get("arch") == sys.argv[2]], sys.stdout, indent=2)
 print()
 PY
 
@@ -200,7 +231,8 @@ PY
 
     log "Saving ${load_ref} -> ${tar_name}"
     docker save -o "${PAYLOAD_DIR}/images/${tar_name}" "${load_ref}"
-    printf '%s\t%s\t%s\t%s\n' "${tar_name}" "${load_ref}" "${target_ref}" "${item_platform}" >> "${PAYLOAD_DIR}/images/image-index.tsv"
+    printf '%s\t%s\t%s\t%s\n' \
+      "${tar_name}" "${load_ref}" "${target_ref}" "${item_platform}" >> "${PAYLOAD_DIR}/images/image-index.tsv"
     count=$((count + 1))
   done < "${index}"
 
