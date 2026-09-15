@@ -3,16 +3,14 @@ name: Build MongoDB Cluster Offline Installer
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
-    tags:
-      - "v*"
+    branches: [main, master]
+    tags: ["v*"]
     paths:
       - ".github/workflows/build-offline-installer.yml"
       - "build.sh"
       - "install.sh"
       - "README.md"
+      - "scripts/**"
       - "images/**"
       - "charts/**"
   pull_request:
@@ -21,6 +19,7 @@ on:
       - "build.sh"
       - "install.sh"
       - "README.md"
+      - "scripts/**"
       - "images/**"
       - "charts/**"
 
@@ -28,14 +27,50 @@ permissions:
   contents: write
 
 jobs:
+  meta:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Validate shell and delivery invariants
+        run: |
+          chmod +x build.sh install.sh scripts/install-overlay.sh scripts/validate-delivery.py
+          bash -n build.sh
+          bash -n install.sh
+          bash -n scripts/install-overlay.sh
+          python3 scripts/validate-delivery.py
+
+      - name: Validate Helm chart
+        run: |
+          helm dependency build charts/mongodb
+          helm lint charts/mongodb -f charts/mongodb/archinfra-values.yaml
+          helm template mongodb-cluster charts/mongodb \
+            -n aict \
+            -f charts/mongodb/archinfra-values.yaml \
+            --set auth.existingSecret=mongodb-auth \
+            --set global.security.allowInsecureImages=true \
+            > /tmp/mongodb-rendered.yaml
+          grep -q 'kind: StatefulSet' /tmp/mongodb-rendered.yaml
+          grep -q 'kind: ServiceMonitor' /tmp/mongodb-rendered.yaml
+          grep -q 'kind: PrometheusRule' /tmp/mongodb-rendered.yaml
+          grep -q 'startupProbe:' /tmp/mongodb-rendered.yaml
+
   build:
+    needs: meta
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        arch:
-          - amd64
-          - arm64
+        arch: [amd64, arm64]
 
     steps:
       - name: Checkout
@@ -47,17 +82,38 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Ensure executable permissions
-        run: chmod +x build.sh install.sh
-
       - name: Build installer
-        run: ./build.sh --arch "${{ matrix.arch }}"
+        run: |
+          chmod +x build.sh install.sh scripts/install-overlay.sh
+          ./build.sh --arch "${{ matrix.arch }}"
+
+      - name: Validate generated installer help
+        run: |
+          RUN="dist/mongodb-cluster-installer-${{ matrix.arch }}.run"
+          "$RUN" help overview | tee /tmp/help-overview.txt
+          "$RUN" help install | tee /tmp/help-install.txt
+          "$RUN" help params | tee /tmp/help-params.txt
+          grep -q 'MongoDB.*8.0.32' /tmp/help-overview.txt
+          grep -q 'lite.*standard.*large\|lite|standard|large' /tmp/help-params.txt
+          grep -q 'Secret/mongodb-auth' /tmp/help-overview.txt
+          if "$RUN" install --resource-profile mid -y >/tmp/legacy-profile.log 2>&1; then
+            echo 'legacy resource profile unexpectedly accepted'
+            exit 1
+          fi
+          grep -q 'lite|standard|large' /tmp/legacy-profile.log
+
+      - name: Verify checksum
+        run: |
+          cd dist
+          sha256sum -c "mongodb-cluster-installer-${{ matrix.arch }}.run.sha256"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -72,14 +128,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-24.04
-
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
-
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
