@@ -94,6 +94,11 @@ assemble_installer_template() {
   cat "${INSTALLER_OVERLAY}" >> "${ASSEMBLED_INSTALLER}"
   printf '\n' >> "${ASSEMBLED_INSTALLER}"
   awk 'BEGIN{emit=0} $0 == "main \"$@\"" {emit=1} emit {print}' "${INSTALLER_TEMPLATE}" >> "${ASSEMBLED_INSTALLER}"
+
+  # The help text is emitted from an unquoted heredoc so shell substitutions are
+  # intentional for variables, but Markdown-style backticks must never execute.
+  sed -i 's/Run `\${cmd} help install`/Run ${cmd} help install/' "${ASSEMBLED_INSTALLER}"
+
   chmod +x "${ASSEMBLED_INSTALLER}"
   bash -n "${ASSEMBLED_INSTALLER}" || die "assembled installer failed bash syntax validation"
 }
@@ -126,7 +131,9 @@ matched = [x for x in items if x.get("arch") == arch]
 if not matched:
     raise SystemExit(f"no image definitions for arch={arch}")
 for item in matched:
-    print("\t".join([
+    # Use a non-whitespace delimiter so an intentionally empty `pull` field does
+    # not collapse adjacent columns when Bash reads locally-built image entries.
+    print("|".join([
         item["tar"], item.get("build", "pull"), item.get("pull", ""),
         item["tag"], item.get("platform", f"linux/{arch}")
     ]))
@@ -200,7 +207,7 @@ build_mongodb_exporter() {
 
 prepare_images() {
   local arch="$1" platform="$2" count=0
-  local index="${PAYLOAD_DIR}/images/build-index.tsv"
+  local index="${PAYLOAD_DIR}/images/build-index.psv"
   : > "${PAYLOAD_DIR}/images/image-index.tsv"
   build_index_for_arch "${arch}" "${index}"
 
@@ -212,8 +219,9 @@ json.dump([x for x in items if x.get("arch") == sys.argv[2]], sys.stdout, indent
 print()
 PY
 
-  while IFS=$'\t' read -r tar_name build_kind pull target_ref item_platform; do
+  while IFS='|' read -r tar_name build_kind pull target_ref item_platform; do
     [[ -n "${tar_name}" ]] || continue
+    [[ -n "${target_ref}" ]] || die "image ${tar_name} is missing target tag"
     [[ -n "${item_platform}" ]] || item_platform="${platform}"
     local load_ref="$(build_local_load_ref "${target_ref}" "${arch}")"
 
@@ -229,7 +237,7 @@ PY
       *) die "unsupported image build kind: ${build_kind}" ;;
     esac
 
-    log "Saving ${load_ref} -> ${tar_name}"
+    log "Saving ${load_ref} -> ${tar_name} (target ${target_ref})"
     docker save -o "${PAYLOAD_DIR}/images/${tar_name}" "${load_ref}"
     printf '%s\t%s\t%s\t%s\n' \
       "${tar_name}" "${load_ref}" "${target_ref}" "${item_platform}" >> "${PAYLOAD_DIR}/images/image-index.tsv"
