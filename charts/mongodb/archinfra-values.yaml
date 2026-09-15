@@ -1,0 +1,106 @@
+# Archinfra MongoDB 8.0 delivery baseline.
+# Installer profile-specific values may override CPU/memory/PVC size at runtime.
+
+global:
+  security:
+    allowInsecureImages: true
+
+architecture: replicaset
+replicaCount: 3
+
+image:
+  registry: sealos.hub:5000
+  repository: kube4/mongodb
+  tag: 8.0.32-archinfra1
+  pullPolicy: IfNotPresent
+
+auth:
+  enabled: true
+  rootUser: root
+  existingSecret: mongodb-auth
+
+service:
+  type: ClusterIP
+
+externalAccess:
+  enabled: false
+
+startupProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 60
+
+terminationGracePeriodSeconds: 120
+
+persistentVolumeClaimRetentionPolicy:
+  enabled: true
+  whenScaled: Retain
+  whenDeleted: Retain
+
+persistence:
+  enabled: true
+  size: 100Gi
+
+backup:
+  enabled: false
+
+networkPolicy:
+  enabled: true
+  # Compatibility baseline: authentication is mandatory, while application
+  # namespace allow-lists are project-specific and should be layered later.
+  allowExternal: true
+
+metrics:
+  enabled: true
+  image:
+    registry: sealos.hub:5000
+    repository: kube4/mongodb-exporter
+    tag: 0.51.0-archinfra1
+    pullPolicy: IfNotPresent
+  compatibleMode: true
+  collector:
+    all: false
+    diagnosticdata: true
+    replicasetstatus: true
+    dbstats: false
+    topmetrics: false
+    indexstats: false
+    collstats: false
+  startupProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    labels:
+      monitoring.archinfra.io/stack: default
+  prometheusRule:
+    enabled: true
+    additionalLabels:
+      monitoring.archinfra.io/stack: default
+  dashboards:
+    enabled: true
+    labels:
+      grafana_dashboard: "1"
+      monitoring.archinfra.io/stack: default
+    annotations:
+      grafana_folder: Middleware/MongoDB
+
+resourcesPreset: none
+resources:
+  requests:
+    cpu: "1"
+    memory: 4Gi
+  limits:
+    cpu: "2"
+    memory: 8Gi
+
+pdb:
+  create: true
+  maxUnavailable: 1
