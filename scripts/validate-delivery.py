@@ -125,7 +125,9 @@ def main() -> int:
         "arch: [amd64, arm64]",
     )
 
-    reject(BUILD, "command -v jq", "jq ")
+    # Documentation may mention jq to explicitly state that it is not required;
+    # reject only executable dependency patterns.
+    reject(BUILD, "command -v jq", "jq -r", "jq -c", "apt-get install -y jq")
     reject(
         OVERLAY,
         "MongoDB@Passw0rd",
