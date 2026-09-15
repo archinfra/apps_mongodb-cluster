@@ -1,446 +1,265 @@
 # apps_mongodb-cluster
 
-MongoDB 高可用副本集离线交付仓库。
-
-这个仓库不是单独放一个 Helm chart，而是把下面几件事打成了一套完整的 `.run` 安装方案：
-
-- 镜像准备
-- Helm 安装
-- 监控接入
-- GitHub Actions 多架构构建
-- 离线安装包交付
-
-整体范式和我们之前的 MySQL、Redis、MinIO、Milvus、RabbitMQ 仓库保持一致，目标是让陌生使用者拿到安装包后，也能比较稳定地完成部署、升级、排障和监控接入。
-
-## 这套安装器是怎么设计的
-
-普通使用者可以把它理解成一个“MongoDB 副本集离线安装器”，核心只有 4 个动作：
-
-- `install`
-- `status`
-- `uninstall`
-- `help`
-
-其中 `install` 会自动完成这些步骤：
-
-1. 解包 `.run` 里的 chart、镜像元数据和镜像 tar
-2. 按目标镜像仓库地址准备 MongoDB、exporter 和辅助镜像
-3. 检查集群里是否支持 `ServiceMonitor`
-4. 生成最终的 Helm 参数
-5. 执行 `helm upgrade --install`
-6. 输出 Pod、StatefulSet、Service、PVC、ServiceMonitor 状态
-
-这意味着使用者通常不需要自己手动做这些事情：
-
-- `docker load`
-- `docker tag`
-- `docker push`
-- `helm dependency build`
-- `kubectl apply ServiceMonitor`
-
-安装器已经把这些流程编排好了。
-
-## 默认值
-
-下面是安装器当前的默认业务参数：
-
-- namespace: `aict`
-- release name: `mongodb-cluster`
-- architecture: `replicaset`
-- data replicas: `3`
-- replica set name: `rs0`
-- root user: `root`
-- root password: `MongoDB@Passw0rd`
-- replica set key: `ArchInfraMongoReplicaSetKey2026`
-- authentication: `true`
-- arbiter: `false`
-- hidden replicas: `0`
-- pod anti-affinity: `soft`
-- volume permissions: `true`
-- storage class: `nfs`
-- storage size: `20Gi`
-- metrics: `true`
-- ServiceMonitor: `true`
-- ServiceMonitor interval: `30s`
-- registry repo: `sealos.hub:5000/kube4`
-- image pull policy: `IfNotPresent`
-- wait timeout: `10m`
-- resource profile: `mid`
-
-## Resource profile
-
-Installer supports:
-
-- `--resource-profile low`
-- `--resource-profile mid`
-- `--resource-profile midd`
-- `--resource-profile high`
-
-Default is `mid`. `midd` is accepted as an alias of `mid`.
-
-Profile intent:
-
-- `low`: demo, smoke test, or lightweight shared environment
-- `mid`: normal shared environment, baseline for `500-1000` concurrency and around `10000` users
-- `high`: higher write pressure, larger working set, or busier shared cluster
-
-Per-profile baseline:
-
-| Profile | MongoDB data pod | Exporter sidecar | volumePermissions init | Arbiter | Hidden replica |
-| --- | --- | --- | --- | --- | --- |
-| `low` | `300m / 768Mi` request, `500m / 1Gi` limit | `50m / 64Mi` request, `100m / 128Mi` limit | `20m / 32Mi` request, `100m / 64Mi` limit | `100m / 256Mi` request, `300m / 512Mi` limit | `300m / 768Mi` request, `500m / 1Gi` limit |
-| `mid` | `500m / 1Gi` request, `1 / 2Gi` limit | `100m / 128Mi` request, `200m / 256Mi` limit | `50m / 64Mi` request, `200m / 128Mi` limit | `200m / 512Mi` request, `500m / 1Gi` limit | `500m / 1Gi` request, `1 / 2Gi` limit |
-| `high` | `1 / 2Gi` request, `2 / 4Gi` limit | `200m / 256Mi` request, `500m / 512Mi` limit | `100m / 128Mi` request, `300m / 256Mi` limit | `500m / 1Gi` request, `1 / 2Gi` limit | `1 / 2Gi` request, `2 / 4Gi` limit |
-
-这套默认值面向的是“标准三节点副本集 + 默认开启监控”的常见场景。
-
-## 默认部署拓扑
-
-如果直接执行：
-
-```bash
-./mongodb-cluster-installer-amd64.run install -y
-```
-
-默认会部署：
-
-- 1 个 MongoDB StatefulSet
-- 3 个数据节点，组成一个副本集
-- 1 个 headless Service
-- 1 个 metrics Service
-- 3 个 PVC
-- 每个数据节点 1 个 `mongodb-exporter` sidecar
-- 1 个 `ServiceMonitor`
-
-默认不会部署：
-
-- arbiter
-- hidden node
-- 外部暴露 NodePort / LoadBalancer
-- TLS
-- 备份任务
-
-也就是说，默认路径聚焦在“高可用副本集 + 集群内访问 + 默认监控接入”。
-
-## 资源需求矩阵
-
-这部分是给使用者和自动化系统做资源预估用的。
-
-当前 chart 的资源主要来自 Bitnami `common.resources.preset` 预设：
-
-- MongoDB 主容器：显式 `500m / 1Gi` request，`1 / 2Gi` limit
-- exporter：显式 `100m / 128Mi` request，`200m / 256Mi` limit
-- volumePermissions init 容器：显式 `50m / 64Mi` request，`200m / 128Mi` limit
-
-对应的大致资源如下。
-
-### 单个数据节点
-
-MongoDB 主容器 `mid`：
-
-- request: `500m CPU / 1Gi memory`
-- limit: `1 CPU / 2Gi memory`
-
-Exporter `mid`：
-
-- request: `100m CPU / 128Mi memory`
-- limit: `200m CPU / 256Mi memory`
-
-所以一个默认数据节点的持续资源大致是：
-
-- request: `600m CPU / 640Mi memory`
-- limit: `900m CPU / 960Mi memory`
-
-### 默认三节点副本集总资源
-
-默认 `replicaCount=3` 且监控开启时，持续资源大致是：
-
-| 项目 | 单节点 | 3 节点合计 |
-| --- | --- | --- |
-| CPU request | `600m` | `1800m` |
-| Memory request | `1152Mi` | `3456Mi` |
-| CPU limit | `1200m` | `3600m` |
-| Memory limit | `2304Mi` | `6912Mi` |
-
-### volumePermissions 额外启动开销
-
-默认 `volumePermissions=true`，每个数据节点启动时还会额外跑一个显式 sizing 的 init 容器：
-
-- request: `50m CPU / 64Mi memory`
-- limit: `200m CPU / 128Mi memory`
-
-它不是长期常驻容器，但在首次启动、重建 Pod 或重新挂载卷时会出现。
-
-### 开启 arbiter 后的额外资源
-
-如果启用：
-
-```bash
---enable-arbiter
-```
-
-arbiter 在默认 `mid` 档位下大致额外增加：
-
-- request: `200m CPU / 512Mi memory`
-- limit: `500m CPU / 1Gi memory`
-
-### 开启 hidden node 后的额外资源
-
-如果通过：
-
-```bash
---hidden-replica-count <num>
-```
-
-启用 hidden node，则每个 hidden 节点在默认 `mid` 档位下大致额外增加：
-
-- request: `500m CPU / 1Gi memory`
-- limit: `1 CPU / 2Gi memory`
-
-### 存储需求
-
-默认数据卷大小是：
-
-- 每个数据节点 `20Gi`
-- 默认 `3` 个数据节点
-
-所以默认最低持久化存储需求是：
-
-- `60Gi`
-
-如果启用了 hidden node，安装器也会默认给 hidden 节点同样的存储大小，所以总存储需求会继续增加。
-
-## 快速开始
-
-### 1. 查看帮助
-
-```bash
-./mongodb-cluster-installer-amd64.run --help
-./mongodb-cluster-installer-amd64.run help
-```
-
-### 2. 用默认参数安装高可用副本集
-
-```bash
-./mongodb-cluster-installer-amd64.run install -y
-```
-
-### 3. 查看状态
-
-```bash
-./mongodb-cluster-installer-amd64.run status
-```
-
-### 4. 卸载
-
-```bash
-./mongodb-cluster-installer-amd64.run uninstall -y
-```
-
-如果还需要把 PVC 一起清理掉：
-
-```bash
-./mongodb-cluster-installer-amd64.run uninstall --delete-pvc -y
-```
-
-## 常见使用场景
-
-### 场景 1：标准三节点高可用副本集
-
-```bash
-./mongodb-cluster-installer-amd64.run install -y
-```
-
-### 场景 2：自定义 root 密码和副本集密钥
+Archinfra MongoDB 8.0 高可用副本集离线交付仓库。
+
+当前交付基线聚焦于 **安全、可重复、双架构、可观测、可升级**：安装器负责镜像准备、Helm 安装、凭证 Secret 生命周期、资源规格、PVC 策略、Prometheus/Grafana 接入和离线包构建。
+
+## 当前交付基线
+
+| 项目 | 基线 |
+| --- | --- |
+| Installer | `v0.2.0` |
+| MongoDB | `8.0.32` |
+| mongodb_exporter | Percona `0.51.0` |
+| 默认架构 | ReplicaSet |
+| 默认数据节点 | `3` |
+| 默认资源规格 | `standard` |
+| 认证 | 默认开启 |
+| root 密码 | 首次安装随机生成，写入 Secret |
+| replicaSetKey | 首次安装随机生成，写入 Secret |
+| 外部访问 | 默认关闭 |
+| Service | `ClusterIP` |
+| startupProbe | 开启 |
+| terminationGracePeriodSeconds | `120` |
+| PVC retention | `Retain` |
+| Metrics | 默认开启 |
+| ServiceMonitor | CRD 存在时开启 |
+| PrometheusRule | CRD 存在时开启 |
+| Grafana Dashboard | 默认开启 |
+| Backup | 本轮关闭，后续统一接 Data Protection |
+| 架构 | `amd64` / `arm64` |
+
+> MongoDB 8.0.32 是 8.0 稳定线的安全/可靠性补丁版本。本仓库将 MongoDB 运行时构建固定到一个经过 pin 的 Bitnami-compatible lifecycle source commit，并从 MongoDB 官方 8.0 apt 仓库安装 8.0.32 软件包；amd64/arm64 使用同一套构建逻辑，不再分别依赖两套 MongoDB 成品镜像供应链。
+
+---
+
+## 推荐标准安装
+
+正式交付推荐显式写出关键参数：
 
 ```bash
 ./mongodb-cluster-installer-amd64.run install \
-  --root-password 'MongoDB@Passw0rd' \
-  --replica-set-key 'ArchInfraMongoReplicaSetKey2026' \
+  --namespace aict \
+  --architecture replicaset \
+  --resource-profile standard \
+  --storage-class ceph-rbd \
+  --storage-size 100Gi \
+  --enable-auth \
+  --enable-metrics \
+  --enable-servicemonitor \
+  --enable-prometheusrule \
+  --pod-anti-affinity hard \
+  --wait-timeout 15m \
   -y
 ```
 
-### 场景 3：初始化一个业务库和业务用户
+ARM64 使用：
+
+```bash
+./mongodb-cluster-installer-arm64.run install \
+  --namespace aict \
+  --architecture replicaset \
+  --resource-profile standard \
+  --storage-class ceph-rbd \
+  --storage-size 100Gi \
+  --enable-auth \
+  --enable-metrics \
+  --enable-servicemonitor \
+  --enable-prometheusrule \
+  --pod-anti-affinity hard \
+  --wait-timeout 15m \
+  -y
+```
+
+这套标准安装得到：
+
+```text
+MongoDB                  8.0.32
+ReplicaSet               rs0
+Data replicas            3
+Per-node request         1 CPU / 4Gi
+Per-node limit           2 CPU / 8Gi
+Per-node PVC             100Gi
+Authentication           ON
+External access          OFF
+Service                  ClusterIP
+Metrics                  ON
+ServiceMonitor           ON
+PrometheusRule           ON
+startupProbe             ON
+Graceful termination     120s
+PVC retention            Retain
+Backup                    OFF
+```
+
+`ceph-rbd` 是生产示例，不是硬编码要求。现场可以替换为经过验证的 Ceph RBD、SAN、云块存储或本地高性能块存储。**生产 MongoDB 不推荐把 NFS 作为默认数据盘。**
+
+---
+
+## Resource Profile
+
+对外交付只允许三种规格：
+
+- `lite`
+- `standard`
+- `large`
+
+不再支持 `low / mid / midd / middle / medium / high` 等旧名称。
+
+| Profile | 数据节点 | 单节点 Request | 单节点 Limit | 新装 PVC/节点 | 适用场景 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `lite` | 1 | `500m / 1Gi` | `1C / 2Gi` | `20Gi` | Demo、开发、冒烟；**非 HA** |
+| `standard` | 3 | `1C / 4Gi` | `2C / 8Gi` | `100Gi` | **默认生产交付** |
+| `large` | 3 | `2C / 8Gi` | `4C / 16Gi` | `500Gi` | 更大 working set / 更高读写压力 |
+
+Exporter 和 volumePermissions 还有少量独立资源开销，因此上表是 **MongoDB 主容器** 的资源规格，不等于整个 Pod 的精确总资源。
+
+### 精简模式
 
 ```bash
 ./mongodb-cluster-installer-amd64.run install \
-  --app-database appdb \
-  --app-username app \
-  --app-password 'AppUser@2026' \
+  --resource-profile lite \
+  --storage-class nfs \
   -y
 ```
 
-### 场景 4：镜像仓库里已经有镜像，不想重复推送
+`lite` 默认只有 1 个数据节点，只用于测试/开发，不提供副本集故障转移能力。
+
+### 大规格
 
 ```bash
 ./mongodb-cluster-installer-amd64.run install \
-  --registry sealos.hub:5000/kube4 \
-  --skip-image-prepare \
+  --resource-profile large \
+  --storage-class ceph-rbd \
   -y
 ```
 
-### 场景 5：关闭监控
+### 单独覆盖 PVC
 
 ```bash
 ./mongodb-cluster-installer-amd64.run install \
-  --disable-servicemonitor \
-  --disable-metrics \
+  --resource-profile standard \
+  --storage-class ceph-rbd \
+  --storage-size 300Gi \
   -y
 ```
 
-### 场景 6：做一个 2 数据节点 + 1 arbiter 的轻量副本集
+---
+
+## 凭证与认证
+
+### 默认行为
+
+认证默认开启：
+
+```text
+auth.enabled=true
+```
+
+首次安装如果没有传：
+
+```text
+--root-password
+--replica-set-key
+```
+
+安装器会生成强随机值并写入：
+
+```text
+Secret/mongodb-auth
+```
+
+主要 keys：
+
+```text
+mongodb-root-password
+mongodb-replica-set-key
+mongodb-passwords        # 配置业务用户时存在
+```
+
+获取 root 密码：
+
+```bash
+kubectl get secret -n aict mongodb-auth \
+  -o jsonpath='{.data.mongodb-root-password}' | base64 -d; echo
+```
+
+获取 replicaSetKey：
+
+```bash
+kubectl get secret -n aict mongodb-auth \
+  -o jsonpath='{.data.mongodb-replica-set-key}' | base64 -d; echo
+```
+
+### 显式指定凭证
+
+如果交付规范要求由密码系统提供：
 
 ```bash
 ./mongodb-cluster-installer-amd64.run install \
-  --replica-count 2 \
-  --enable-arbiter \
+  --root-password '<STRONG_PASSWORD>' \
+  --replica-set-key '<STRONG_REPLICA_SET_KEY>' \
   -y
 ```
 
-### 场景 7：需要更多 Helm 细粒度参数
+不要把真实密码写进 Git、README、项目交付模板或长期保存的 shell history。
 
-```bash
-./mongodb-cluster-installer-amd64.run install \
-  --helm-args "--set externalAccess.enabled=true --set externalAccess.service.type=LoadBalancer" \
-  -y
-```
+### 旧环境 reconcile
 
-对于更复杂、包含空格或需要精确保留 shell 引号的 Helm 参数，建议用 `--` 透传：
+对已有 MongoDB release：
 
-```bash
-./mongodb-cluster-installer-amd64.run install -y -- \
-  --set hidden.enabled=true \
-  --set hidden.replicaCount=2 \
-  --set-string hidden.persistence.size=50Gi
-```
-
-## 监控是怎么处理的
-
-MongoDB 这套安装器默认监控是开启的：
-
-- `metrics.enabled=true`
-- `metrics.serviceMonitor.enabled=true`
-
-并且默认会打上平台统一标签：
-
-- `monitoring.archinfra.io/stack=default`
-
-这意味着如果你的 Prometheus Stack 采用了我们之前统一的发现策略，它会自动发现这个 MongoDB 的 `ServiceMonitor`。
-
-如果集群里没有 `ServiceMonitor` CRD，安装器会自动降级：
-
-- 保留 exporter sidecar
-- 关闭 `ServiceMonitor` 资源创建
-
-不会因为监控 CRD 缺失而导致整个 MongoDB 安装失败。
-
-## 常用参数
-
-### 核心参数
-
-- `-n, --namespace <ns>`
-- `--release-name <name>`
-- `--architecture <replicaset|standalone>`
-- `--replica-count <num>`
-- `--replica-set-name <name>`
-- `--root-user <name>`
-- `--root-password <pwd>`
-- `--replica-set-key <value>`
-- `--enable-auth`
-- `--disable-auth`
-- `--app-database <name>`
-- `--app-username <name>`
-- `--app-password <pwd>`
-- `--storage-class <name>`
-- `--storage-size <size>`
-- `--pod-anti-affinity <soft|hard|none>`
-- `--enable-arbiter`
-- `--disable-arbiter`
-- `--hidden-replica-count <num>`
-- `--enable-volume-permissions`
-- `--disable-volume-permissions`
-
-### 监控参数
-
-- `--enable-metrics`
-- `--disable-metrics`
-- `--enable-servicemonitor`
-- `--disable-servicemonitor`
-- `--service-monitor-namespace <ns>`
-- `--service-monitor-interval <value>`
-- `--service-monitor-scrape-timeout <value>`
-
-### 镜像和等待参数
-
-- `--registry <repo-prefix>`
-- `--registry-user <user>`
-- `--registry-password <password>`
-- `--image-pull-policy <policy>`
-- `--skip-image-prepare`
-- `--wait-timeout <duration>`
-
-### 高级透传
-
-- `--helm-args "<args>"`
-- `-- <helm_args>`
-
-## 如何进一步自定义
-
-安装器提供了 3 层自定义能力。
-
-### 第一层：直接使用安装器参数
-
-这适合大多数通用场景，也是最推荐的方式。
-
-### 第二层：用 `--helm-args`
-
-适合那些安装器暂时没有单独暴露，但你又只想追加一两项 Helm 设置的场景。
-
-例如：
-
-```bash
-./mongodb-cluster-installer-amd64.run install \
-  --helm-args "--set tls.enabled=true --set externalAccess.enabled=true" \
-  -y
-```
-
-### 第三层：用 `--` 做完整 Helm 透传
-
-这适合复杂定制，例如：
-
-- 外部访问
-- TLS
-- hidden node 的额外参数
-- 节点亲和性
-- tolerations
-- 自定义资源 limits/requests
-- PrometheusRule
+1. 优先复用 `Secret/mongodb-auth`；
+2. 如果是旧版安装器创建的 Secret，会尝试迁移当前 root password / replicaSetKey；
+3. 如果已有 release 但当前凭证无法恢复，安装器**不会生成一个新密码去覆盖旧 PVC**；
+4. 此时必须显式提供当前真实凭证。
 
 示例：
 
 ```bash
-./mongodb-cluster-installer-amd64.run install -y -- \
-  --set externalAccess.enabled=true \
-  --set externalAccess.service.type=NodePort \
-  --set externalAccess.service.domain=mongodb.example.com \
-  --set externalAccess.service.nodePorts[0]=30017 \
-  --set externalAccess.service.nodePorts[1]=30018 \
-  --set externalAccess.service.nodePorts[2]=30019
+./mongodb-cluster-installer-amd64.run install \
+  --root-password '<CURRENT_PASSWORD>' \
+  --replica-set-key '<CURRENT_REPLICA_SET_KEY>' \
+  --resource-profile standard \
+  -y
 ```
 
-## 和其他组件怎么对接
+普通 `install` / reconcile 不承担密码轮换。密码轮换应作为独立运维动作处理。
 
-MongoDB 默认不依赖这些组件启动：
+### 业务用户
 
-- MySQL
-- Redis
-- Nacos
+初始化业务库/用户仍支持：
 
-它和其他组件最常见的关系，是“被应用系统调用”而不是“依赖这些系统才能启动”。
+```bash
+./mongodb-cluster-installer-amd64.run install \
+  --app-database appdb \
+  --app-username app_user \
+  --app-password '<APP_PASSWORD>' \
+  -y
+```
 
-### 应用如何连接 MongoDB
+交付建议：
 
-默认副本集内部连接地址形态大致是：
+```text
+root              -> 管理员，只用于运维
+app_user          -> 业务账号，按库授权
+mongodb_exporter  -> TODO：后续从 root 监控连接进一步拆为最小权限监控账号
+mongodb_backup    -> TODO：Data Protection 阶段实现
+```
+
+---
+
+## 网络与暴露策略
+
+默认：
+
+```text
+externalAccess.enabled=false
+service.type=ClusterIP
+```
+
+因此安装后 MongoDB 默认只通过 Kubernetes 内部网络访问，不默认创建 NodePort / LoadBalancer。
+
+标准 ReplicaSet 连接种子类似：
 
 ```text
 mongodb-cluster-0.mongodb-cluster-headless.aict.svc.cluster.local:27017
@@ -448,160 +267,309 @@ mongodb-cluster-1.mongodb-cluster-headless.aict.svc.cluster.local:27017
 mongodb-cluster-2.mongodb-cluster-headless.aict.svc.cluster.local:27017
 ```
 
-如果默认启用了认证，常见连接串是：
+连接串示例：
 
 ```text
-mongodb://root:<password>@mongodb-cluster-0.mongodb-cluster-headless.aict.svc.cluster.local:27017,mongodb-cluster-1.mongodb-cluster-headless.aict.svc.cluster.local:27017,mongodb-cluster-2.mongodb-cluster-headless.aict.svc.cluster.local:27017/admin?replicaSet=rs0&authSource=admin
+mongodb://root:<PASSWORD>@mongodb-cluster-0.mongodb-cluster-headless.aict.svc.cluster.local:27017,mongodb-cluster-1.mongodb-cluster-headless.aict.svc.cluster.local:27017,mongodb-cluster-2.mongodb-cluster-headless.aict.svc.cluster.local:27017/admin?replicaSet=rs0&authSource=admin
 ```
 
-### 和 Prometheus 对接
+如果确实需要集群外访问，应单独设计 LoadBalancer / Gateway / VPN / ACL / NetworkPolicy，不建议把 NodePort 作为默认交付方式。
 
-Prometheus 侧如果按我们统一方案配置了：
+---
 
-- 跨 namespace 发现
-- 按 `monitoring.archinfra.io/stack=default` 选取 `ServiceMonitor`
+## 存储策略
 
-那么 MongoDB 安装后会自动接入，不需要额外写监控对象。
+### 新安装
 
-## 使用前置条件与依赖
+Profile 默认值：
 
-### 必要条件
+```text
+lite      20Gi / data replica
+standard  100Gi / data replica
+large     500Gi / data replica
+```
 
-- Kubernetes 集群可用
-- `kubectl` 可访问目标集群
-- `helm` 已安装
-- 目标命名空间允许创建 StatefulSet、PVC、Secret、Service
-- 至少存在一个可用的 StorageClass
+默认 standard 3 节点即至少申请：
 
-### 镜像相关条件
+```text
+3 × 100Gi = 300Gi
+```
 
-- 如果不带 `--skip-image-prepare`，执行机器需要有 `docker`
-- 如果带 `--skip-image-prepare`，目标仓库里必须已经有安装器所需镜像
+### 已有 PVC 重跑 installer
 
-### 监控相关条件
+PVC/StatefulSet 和 CPU/内存不同，不能把 `volumeClaimTemplates` 当成普通字段随意修改。
 
-- 如果集群里有 `ServiceMonitor` CRD，就会创建 `ServiceMonitor`
-- 如果没有，安装器会自动降级，不会因此失败
+因此：
 
-## 镜像来源说明
+```text
+已有 StatefulSet + 未显式传 --storage-size
+    -> 保持原 volumeClaimTemplate 大小
+```
 
-这个仓库支持 `amd64` 和 `arm64` 多架构，但 MongoDB 主镜像的来源是按架构分开的：
+即使新版 profile 默认是 100Gi，也不会偷偷把旧环境的 20Gi/50Gi PVC 改掉。
 
-- `amd64`：`bitnamilegacy/mongodb:8.0.9`
-- `arm64`：`dlavrenuek/bitnami-mongodb-arm:8.0.9`
-
-辅助镜像采用多架构公共源：
-
-- `bitnamilegacy/mongodb-exporter:0.47.0-debian-12-r1`
-- `bitnamilegacy/kubectl:1.33.4-debian-12-r0`
-- `bitnamilegacy/os-shell:12-debian-12-r51`
-- `bitnamilegacy/nginx:1.29.1-debian-12-r0`
-
-也正因为我们会把公共镜像重新打到目标内网仓库，安装器和 chart 默认都开启了：
-
-- `global.security.allowInsecureImages=true`
-
-这是离线交付场景下的预期行为，不是异常。
-
-## 给 AI 或自动化系统使用时，还需要知道什么
-
-如果你计划把安装包放到服务器上，让大模型自行参考文档完成部署，我建议把下面这些规则也一并告诉它。
-
-### 默认优先策略
-
-如果没有额外约束，优先采用：
-
-- `replicaset`
-- `3` 个数据节点
-- 开启认证
-- 开启 metrics
-- 开启 `ServiceMonitor`
-- `storageClass=nfs`
-- `storageSize=20Gi`
-
-### 什么时候要主动改参数
-
-- 集群资源紧张：考虑降低 `--replica-count`
-- 想要 2 数据节点 + 1 仲裁：使用 `--replica-count 2 --enable-arbiter`
-- 需要业务库和业务用户：补 `--app-database --app-username --app-password`
-- 需要外部访问：优先通过 `--helm-args` 或 `--` 透传 `externalAccess.*`
-- 需要 TLS：通过 `--helm-args` 或 `--` 透传 `tls.*`
-
-### 成功标准
-
-AI 或自动化系统可以把下面这些作为安装成功信号：
-
-- Helm release 状态正常
-- MongoDB StatefulSet Pod 全部 `Running`
-- `kubectl get pvc` 绑定成功
-- 如果启用了监控，metrics Service 存在
-- 如果集群支持 CRD，`ServiceMonitor` 已创建
-- 在副本集模式下，业务可通过副本集连接串访问
-
-### 常见失败信号
-
-- PVC 一直 `Pending`
-- Pod `CrashLoopBackOff`
-- Volume permission 相关报错
-- 认证参数不完整导致启动失败
-- 开启 `ServiceMonitor` 但集群没有对应 CRD
-- 开启 `externalAccess` 但没有配对应的 LB/NodePort 参数
-
-## 常见排障思路
-
-### 1. 看 release 状态
+### 显式扩容
 
 ```bash
-./mongodb-cluster-installer-amd64.run status
+./mongodb-cluster-installer-amd64.run install \
+  --storage-size 300Gi \
+  -y
 ```
 
-### 2. 看 Pod 和 PVC
+要求：
+
+- 只能扩容，不能缩容；
+- StorageClass 必须支持 `allowVolumeExpansion=true`；
+- StorageClass 不能通过 reconcile 原地切换；
+- 生产扩容前仍建议做数据保护和容量确认。
+
+### 卸载
+
+默认卸载 workload，但保留数据 PVC 和管理凭证：
 
 ```bash
-kubectl get pods,pvc -n aict
+./mongodb-cluster-installer-amd64.run uninstall -y
 ```
 
-### 3. 看某个 MongoDB Pod 的日志
+只有明确执行：
 
 ```bash
-kubectl logs -n aict mongodb-cluster-0
+./mongodb-cluster-installer-amd64.run uninstall --delete-pvc -y
 ```
 
-### 4. 看 exporter 是否起来
+才删除数据 PVC，并同时删除 `Secret/mongodb-auth`。
+
+---
+
+## Probe 与优雅停机
+
+MongoDB 主容器：
+
+```text
+startupProbe:
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 60
+```
+
+约提供 10 分钟启动窗口，用于：
+
+- 首次 ReplicaSet 初始化；
+- 大 PVC 启动；
+- WiredTiger recovery；
+- 节点异常恢复；
+- 升级后的启动过程。
+
+同时：
+
+```text
+terminationGracePeriodSeconds=120
+```
+
+用于给 MongoDB 正常处理 SIGTERM、checkpoint 和 shutdown 留出时间。
+
+Exporter 也开启 startupProbe。
+
+---
+
+## 安全基线
+
+当前 chart 已具备并继续保留：
+
+- MongoDB 非 root 运行；
+- `allowPrivilegeEscalation=false`；
+- Linux capabilities drop；
+- `seccompProfile: RuntimeDefault`；
+- Authentication 默认 ON；
+- ExternalAccess 默认 OFF；
+- PVC retention 默认 Retain；
+- 不再提供固定 root password；
+- 不再提供固定 replicaSetKey；
+- 不再提供固定 registry 用户名/密码。
+
+当前仍允许：
+
+```text
+networkPolicy.allowExternal=true
+```
+
+这是为了兼容不同项目 namespace。正式项目如果调用方 namespace/label 已知，应再叠加项目级 NetworkPolicy allow-list。
+
+TLS 本轮不是默认开启项，后续应作为单独的证书生命周期和客户端兼容性工作处理。
+
+---
+
+## 监控与告警
+
+Exporter：
+
+```text
+Percona mongodb_exporter 0.51.0
+```
+
+开启 compatibility mode，以降低现有 Dashboard/PromQL 迁移成本。
+
+默认 collector：
+
+- diagnostic data
+- replica set status
+
+默认不开高开销全量 collection/index stats collector。
+
+ServiceMonitor 发现标签：
+
+```yaml
+monitoring.archinfra.io/stack: default
+```
+
+Grafana folder：
+
+```text
+Middleware/MongoDB
+```
+
+当前规则集：
+
+| Alert | 级别 | 意义 |
+| --- | --- | --- |
+| `MongoDBExporterDown` | critical | exporter / MongoDB scrape 不可用 |
+| `MongoDBReplicaSetMembersLow` | critical | 活跃成员少于期望值 |
+| `MongoDBReplicaSetPrimaryMissing` | critical | 没有 PRIMARY |
+| `MongoDBReplicationLagHigh` | warning | replication lag > 30s |
+| `MongoDBReplicationLagCritical` | critical | replication lag > 120s |
+| `MongoDBConnectionsHigh` | warning | 连接利用率 > 80% |
+| `MongoDBConnectionsCritical` | critical | 连接利用率 > 95% |
+| `MongoDBWiredTigerCacheHigh` | warning | WiredTiger cache > 85% |
+| `MongoDBPVCUsageHigh` | warning | PVC > 80% |
+| `MongoDBPVCUsageCritical` | critical | PVC > 90% |
+| `MongoDBPodRestartHigh` | warning | 15 分钟内 MongoDB container 重启 > 3 次 |
+
+其中 PVC/PodRestart 告警依赖中央 Prometheus 同时采集 kubelet / kube-state-metrics。
+
+---
+
+## 日志
+
+MongoDB 容器日志按 Kubernetes 标准 stdout/stderr 采集。
+
+推荐：
+
+```text
+MongoDB container logs
+        -> node-level Fluent Bit / Vector
+        -> Loki / Elasticsearch / centralized logging
+```
+
+不建议在 MongoDB Pod 内再维护一套长期日志归档 sidecar；长期留存、检索和告警交给统一日志平台。
+
+常用查看：
 
 ```bash
-kubectl get svc -n aict | grep metrics
-kubectl get servicemonitor -A | grep mongodb-cluster
+kubectl logs -n aict mongodb-cluster-0 -c mongodb --tail=200
+kubectl logs -n aict mongodb-cluster-1 -c mongodb --tail=200
 ```
 
-### 5. 看副本集是否已经选主
+---
+
+## MongoDB 8.0.32 镜像供应链
+
+本仓库不再使用：
+
+```text
+amd64 -> bitnamilegacy/mongodb:8.0.9
+arm64 -> 第三方 MongoDB 8.0.9 成品镜像
+```
+
+改为统一构建：
+
+```text
+pinned Bitnami-compatible lifecycle source
+        +
+MongoDB official 8.0 apt repository
+        +
+MongoDB 8.0.32
+        ->
+Archinfra mongodb:8.0.32-archinfra1
+```
+
+构建脚本固定上游源码 commit，并在镜像生成后直接执行：
+
+```text
+mongod --version
+```
+
+只有产物真实报告 `8.0.32` 才继续打离线包。
+
+Exporter 同样会验证运行时版本。
+
+这意味着：
+
+- amd64 / arm64 使用同一构建逻辑；
+- target/offline 环境不需要联网构建；
+- `.run` 内已经包含对应架构镜像 tar；
+- 构建环境需要联网访问固定源码和软件包仓库。
+
+---
+
+## 8.0.9 -> 8.0.32 升级说明
+
+这是 MongoDB 8.0 同一 major line 内的 patch 升级，但仍然属于有状态数据库升级。
+
+正式环境建议：
+
+1. 先确认当前 ReplicaSet 全部健康；
+2. 确认 PRIMARY/SECONDARY 状态正常、复制延迟可接受；
+3. 做数据库备份或底层快照；
+4. 记录当前 root password / replicaSetKey；
+5. 先在同版本测试数据/预生产环境验证；
+6. 再执行 installer reconcile；
+7. 升级后核对 ReplicaSet、FCV、业务读写、Exporter 和 Dashboard。
+
+不要把 CI 的“镜像成功构建”理解成“客户现场数据升级已经自动验收”。最终上线仍需要真实 Kubernetes + PVC E2E。
+
+---
+
+## Help
 
 ```bash
-kubectl exec -it -n aict mongodb-cluster-0 -- mongosh admin -u root -p 'MongoDB@Passw0rd' --eval 'rs.status()'
+./mongodb-cluster-installer-amd64.run help
+./mongodb-cluster-installer-amd64.run help overview
+./mongodb-cluster-installer-amd64.run help install
+./mongodb-cluster-installer-amd64.run help params
+./mongodb-cluster-installer-amd64.run help examples
+./mongodb-cluster-installer-amd64.run help architecture
 ```
 
-## 仓库结构
+安装器 help 和本 README 使用同一套 `lite / standard / large` 交付口径。
 
-- `build.sh`
-  负责构建多架构 `.run` 离线安装包
-- `install.sh`
-  安装器入口，负责解包、镜像准备、Helm 安装、状态输出
-- `images/image.json`
-  按架构声明构建所需镜像
-- `charts/mongodb`
-  vendor 进仓库的 MongoDB Helm chart
-- `.github/workflows/build-offline-installer.yml`
-  GitHub Actions 多架构构建和 release 发布流程
+---
 
-## 本地构建
+## 状态检查
 
-如果你在本地手工构建，需要这些工具：
+```bash
+./mongodb-cluster-installer-amd64.run status -n aict
+```
 
-- `jq`
-- `docker`
-- `helm`
+也可以直接：
 
-示例：
+```bash
+kubectl get pods,sts,svc,pvc -n aict -l app.kubernetes.io/instance=mongodb-cluster
+```
+
+ReplicaSet：
+
+```bash
+kubectl exec -n aict mongodb-cluster-0 -c mongodb -- \
+  mongosh --quiet \
+  -u root \
+  -p "$(kubectl get secret -n aict mongodb-auth -o jsonpath='{.data.mongodb-root-password}' | base64 -d)" \
+  --authenticationDatabase admin \
+  --eval 'rs.status()'
+```
+
+---
+
+## 离线构建
 
 ```bash
 ./build.sh --arch amd64
@@ -609,53 +577,76 @@ kubectl exec -it -n aict mongodb-cluster-0 -- mongosh admin -u root -p 'MongoDB@
 ./build.sh --arch all
 ```
 
-产物会在：
+构建机依赖：
 
-- `dist/mongodb-cluster-installer-amd64.run`
-- `dist/mongodb-cluster-installer-amd64.run.sha256`
-- `dist/mongodb-cluster-installer-arm64.run`
-- `dist/mongodb-cluster-installer-arm64.run.sha256`
+```text
+docker + buildx
+git
+helm
+python3 / python
+```
 
-## GitHub Actions 发布
+**不依赖 jq。**
 
-仓库的默认发布方式是 GitHub Actions：
+生成：
 
-- `push main/master`：构建 `amd64` / `arm64` 安装包
-- `push v* tag`：额外发布 GitHub Release
-- `workflow_dispatch`：手工触发构建
+```text
+dist/mongodb-cluster-installer-amd64.run
+dist/mongodb-cluster-installer-amd64.run.sha256
 
-如果本地环境拉不到镜像，推荐直接依赖 GitHub Actions 进行正式产包。
-## Built-in Monitoring, Alerts, And Dashboards
+dist/mongodb-cluster-installer-arm64.run
+dist/mongodb-cluster-installer-arm64.run.sha256
+```
 
-Default install now enables:
+客户目标环境默认需要：
 
-- `metrics.enabled=true`
-- `metrics.serviceMonitor.enabled=true`
-- `metrics.prometheusRule.enabled=true`
+```text
+kubectl
+helm
+docker（如果安装器需要导入/推送内置镜像）
+```
 
-Default monitoring resources:
+如果镜像已经提前进入客户 registry，可以使用：
 
-- `ServiceMonitor`
-- `PrometheusRule`
-- Grafana dashboard `ConfigMap`
+```bash
+--skip-image-prepare
+```
 
-Grafana auto-import contract:
+---
 
-- dashboard label: `grafana_dashboard=1`
-- platform label: `monitoring.archinfra.io/stack=default`
-- folder annotation: `grafana_folder=Middleware/MongoDB`
+## CI 交付门禁
 
-Built-in alerts:
+PR / main CI 会验证：
 
-- `MongoDBExporterDown`
-- `MongoDBReplicaSetMembersLow`
-- `MongoDBConnectionsHigh`
+- shell syntax；
+- MongoDB BOM 固定为 8.0.32；
+- exporter BOM 固定；
+- amd64 / arm64 image metadata；
+- 不允许固定弱 root 密码 / replicaSetKey / registry 密码；
+- `lite / standard / large` 是唯一资源 profile；
+- ClusterIP-only 默认；
+- startupProbe；
+- 120 秒 termination grace；
+- PVC Retain；
+- Backup 默认关闭；
+- ServiceMonitor / PrometheusRule / Dashboard；
+- Helm lint / template；
+- MongoDB runtime 实际版本验证；
+- exporter runtime 实际版本验证；
+- 双架构 `.run` 构建；
+- installer help；
+- SHA256 checksum。
 
-Built-in dashboard panels:
+---
 
-- Healthy Members
-- Current Connections
-- Resident Memory
-- Ops / Sec
-- Connections
-- Operation Rate
+## 后续 TODO
+
+本轮先把 MongoDB 单集群交付基线收口，以下单独迭代：
+
+- [ ] 给 exporter 创建最小权限 `mongodb_exporter` 用户，逐步取消 exporter 使用 root 凭证；
+- [ ] 业务账号标准化：按应用创建 `app_user`，不让业务长期使用 root；
+- [ ] Data Protection：定义 `mongodb_backup`、备份策略、恢复验收；
+- [ ] TLS：证书生成/导入/轮换及客户端连接规范；
+- [ ] 项目级 NetworkPolicy allow-list；
+- [ ] 真实 Kubernetes/Sealos E2E：全新安装、故障转移、Pod 重建、PVC 保留、升级、扩容、卸载/重装；
+- [ ] 独立验证 MongoDB 8.0.x patch rolling upgrade/rollback runbook。
