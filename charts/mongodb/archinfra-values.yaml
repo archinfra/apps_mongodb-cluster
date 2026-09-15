@@ -130,8 +130,11 @@ metrics:
         annotations:
           summary: MongoDB replication lag is critical
           description: At least one replica-set member has been more than 120 seconds behind the primary for 5 minutes.
+      # Percona mongodb_exporter compatibility mode emits the stable v1
+      # `mongodb_connections{conn_type=...}` metric. Do not combine the v2 metric
+      # name (`mongodb_ss_connections`) with the v1 label (`conn_type`).
       - alert: MongoDBConnectionsHigh
-        expr: 'max(mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} / clamp_min(mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} + mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="available"}, 1)) > 0.80'
+        expr: 'max(mongodb_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} / clamp_min(mongodb_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} + mongodb_connections{namespace="{{ .Release.Namespace }}",conn_type="available"}, 1)) > 0.80'
         for: 10m
         labels:
           severity: warning
@@ -140,7 +143,7 @@ metrics:
           summary: MongoDB connection utilization is high
           description: MongoDB connection utilization has remained above 80% for 10 minutes.
       - alert: MongoDBConnectionsCritical
-        expr: 'max(mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} / clamp_min(mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} + mongodb_ss_connections{namespace="{{ .Release.Namespace }}",conn_type="available"}, 1)) > 0.95'
+        expr: 'max(mongodb_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} / clamp_min(mongodb_connections{namespace="{{ .Release.Namespace }}",conn_type="current"} + mongodb_connections{namespace="{{ .Release.Namespace }}",conn_type="available"}, 1)) > 0.95'
         for: 5m
         labels:
           severity: critical
