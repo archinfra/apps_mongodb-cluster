@@ -2,34 +2,39 @@
   {
     "arch": "amd64",
     "platform": "linux/amd64",
-    "pull": "docker.io/bitnamilegacy/mongodb:8.0.9",
-    "tag": "sealos.hub:5000/kube4/mongodb:8.0.9",
+    "build": "mongodb-runtime",
+    "pull": "",
+    "tag": "sealos.hub:5000/kube4/mongodb:8.0.32-archinfra1",
     "tar": "mongodb-amd64.tar"
   },
   {
     "arch": "arm64",
     "platform": "linux/arm64",
-    "pull": "docker.io/dlavrenuek/bitnami-mongodb-arm:8.0.9",
-    "tag": "sealos.hub:5000/kube4/mongodb:8.0.9",
+    "build": "mongodb-runtime",
+    "pull": "",
+    "tag": "sealos.hub:5000/kube4/mongodb:8.0.32-archinfra1",
     "tar": "mongodb-arm64.tar"
   },
   {
     "arch": "amd64",
     "platform": "linux/amd64",
-    "pull": "docker.io/bitnamilegacy/mongodb-exporter:0.47.0-debian-12-r1",
-    "tag": "sealos.hub:5000/kube4/mongodb-exporter:0.47.0-debian-12-r1",
+    "build": "mongodb-exporter",
+    "pull": "",
+    "tag": "sealos.hub:5000/kube4/mongodb-exporter:0.51.0-archinfra1",
     "tar": "mongodb-exporter-amd64.tar"
   },
   {
     "arch": "arm64",
     "platform": "linux/arm64",
-    "pull": "docker.io/bitnamilegacy/mongodb-exporter:0.47.0-debian-12-r1",
-    "tag": "sealos.hub:5000/kube4/mongodb-exporter:0.47.0-debian-12-r1",
+    "build": "mongodb-exporter",
+    "pull": "",
+    "tag": "sealos.hub:5000/kube4/mongodb-exporter:0.51.0-archinfra1",
     "tar": "mongodb-exporter-arm64.tar"
   },
   {
     "arch": "amd64",
     "platform": "linux/amd64",
+    "build": "pull",
     "pull": "docker.io/bitnamilegacy/kubectl:1.33.4-debian-12-r0",
     "tag": "sealos.hub:5000/kube4/kubectl:1.33.4-debian-12-r0",
     "tar": "kubectl-amd64.tar"
@@ -37,6 +42,7 @@
   {
     "arch": "arm64",
     "platform": "linux/arm64",
+    "build": "pull",
     "pull": "docker.io/bitnamilegacy/kubectl:1.33.4-debian-12-r0",
     "tag": "sealos.hub:5000/kube4/kubectl:1.33.4-debian-12-r0",
     "tar": "kubectl-arm64.tar"
@@ -44,6 +50,7 @@
   {
     "arch": "amd64",
     "platform": "linux/amd64",
+    "build": "pull",
     "pull": "docker.io/bitnamilegacy/os-shell:12-debian-12-r51",
     "tag": "sealos.hub:5000/kube4/os-shell:12-debian-12-r51",
     "tar": "os-shell-amd64.tar"
@@ -51,6 +58,7 @@
   {
     "arch": "arm64",
     "platform": "linux/arm64",
+    "build": "pull",
     "pull": "docker.io/bitnamilegacy/os-shell:12-debian-12-r51",
     "tag": "sealos.hub:5000/kube4/os-shell:12-debian-12-r51",
     "tar": "os-shell-arm64.tar"
@@ -58,6 +66,7 @@
   {
     "arch": "amd64",
     "platform": "linux/amd64",
+    "build": "pull",
     "pull": "docker.io/bitnamilegacy/nginx:1.29.1-debian-12-r0",
     "tag": "sealos.hub:5000/kube4/nginx:1.29.1-debian-12-r0",
     "tar": "nginx-amd64.tar"
@@ -65,6 +74,7 @@
   {
     "arch": "arm64",
     "platform": "linux/arm64",
+    "build": "pull",
     "pull": "docker.io/bitnamilegacy/nginx:1.29.1-debian-12-r0",
     "tag": "sealos.hub:5000/kube4/nginx:1.29.1-debian-12-r0",
     "tar": "nginx-arm64.tar"
